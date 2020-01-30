@@ -1,0 +1,189 @@
+---
+title: "Composite method simulation"
+author: "Lisa DeBruine"
+date: "28/01/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(faux)
+```
+
+Parameters
+
+```{r}
+stim_n <- 50 # number of stimuli in the full image set
+r <- 0 # correlation between the visual and proxy trait values
+comp_n <- 10 # number of images in the high and low composites
+rater_n <- 100 # number of raters doing the rating
+error_sd <- 0.5 # how good the raters are at detecting the visual difference. 0 would be perfect perception
+```
+
+
+Simulate a set of `stim_n` stimuli with "visual" and "proxy" trait values, with no correlation between the two. For example, for the trait of psychopathy, the proxy value could be a score on a psychopathy questionnaire, while the visual score is how "psychopathic" the stimulus looks (on average).
+
+```{r}
+
+dat <- rnorm_multi(
+  n = stim_n, 
+  vars = 2, 
+  r = r, 
+  varnames = c("visual", "proxy")
+)
+```
+
+Choose the top and bottom `comp_n` stimuli, based on proxy trait values. Caluclate the mean proxy and visual values for the two groups.
+
+```{r}
+
+composites <- dat %>%
+  mutate(grp = case_when(
+    min_rank(proxy) <= comp_n ~ "low",
+    min_rank(proxy) > nrow(.)-comp_n ~ "high"
+  )) %>%
+  filter(!is.na(grp)) %>%
+  group_by(grp) %>%
+  summarise(mean_proxy = mean(proxy),
+            mean_visual = mean(visual))
+
+```
+
+
+Simulate the 
+
+```{r}
+n <- seq(5, 50, 5)
+xxx <- map(n, function(x) {
+  map_dbl(rep(x, 1000), function(x) {mean(rnorm(x)) - mean(rnorm(x))})
+  })
+
+dx <- as.data.frame(xxx)
+names(dx) <- n
+gather(dx, n, score, `5`:`50`) %>%
+  mutate(n = as.integer(n)) %>%
+  #group_by(n) %>%
+  #summarise(score = mean(score > .2)) %>%
+  ggplot(aes(score, color = as.factor(n))) +
+  geom_density() +
+  xlab("Effect size of difference between high and low composites")  +
+  scale_color_discrete(name = "Number of images per composite") +
+  ggtitle("When Proxy and visual signals are uncorrelated (r = 0)")
+```
+
+```{r}
+gather(dx, n, score, `5`:`50`) %>%
+  mutate(n = as.integer(n)) %>%
+  group_by(n) %>%
+  summarise(score = mean(score > .2)) %>%
+  ggplot(aes(n, score)) +
+  geom_point( ) +
+  geom_line() +
+  xlab("Number of images per composite")  +
+  ylab("Percent of imagesets where effect size > 0.2") +
+  ggtitle("When Proxy and visual signals are uncorrelated (r = 0)") +
+  scale_x_continuous(breaks = n) +
+  ylim(0, 0.5)
+```
+
+
+Simulate `rater_n` raters. They will perceive the visual values of the composites with some error and choose the one that is higher.
+
+```{r}
+h <- composites$mean_visual[1] + rnorm(rater_n, 0, error_sd)
+l <- composites$mean_visual[2] + rnorm(rater_n, 0, error_sd)
+
+binom.test(sum(h > l), rater_n, p = 0.5, "greater" )
+  
+```
+
+Wrap this in a function to simulate a single image set, repeated over `reps` sets of raters. Return the proportion of rating studies where a binomail test of the results was positive. (Set `alternative` to "greater" for a directional test.)
+
+```{r}
+sim <- function(stim_n = 30,
+                r = 0.9,
+                comp_n = 10,
+                rater_n = 150,
+                error_sd = 0.2,
+                reps = 100,
+                alternative = "greater",
+                alpha = 0.05) {
+  
+  dat <- rnorm_multi(
+    n = stim_n, 
+    vars = 2, 
+    r = r, 
+    varnames = c("visual", "proxy")
+  )
+  
+  composites <- dat %>%
+    mutate(grp = case_when(
+      min_rank(proxy) <= comp_n ~ "low",
+      min_rank(proxy) > nrow(.)-comp_n ~ "high"
+    )) %>%
+    filter(!is.na(grp)) %>%
+    group_by(grp) %>%
+    summarise(mean_proxy = mean(proxy),
+              mean_visual = mean(visual))
+  
+  sim_p <- map_dbl(1:reps, function(x) {
+    h <- composites$mean_visual[1] + rnorm(rater_n, 0, error_sd)
+    l <- composites$mean_visual[2] + rnorm(rater_n, 0, error_sd)
+
+    bt <- binom.test(sum(h > l), rater_n, 
+                     p = 0.5, alternative)
+    
+    bt$p.value
+  })
+  
+  mean(sim_p < alpha)
+}
+```
+
+Running the function once gives you the proportion of "replication studies" where this single simulated image set will give you a significant result in the predicted direction.
+
+```{r}
+sim(stim_n, r, comp_n, rater_n, error_sd, 100, "greater")
+```
+
+
+The simulation above is just for a single random image set. We can also run this simulation 100 times, to simulate 100 different random image sets.
+
+```{r}
+x <- replicate(100, sim(stim_n, r, comp_n, rater_n, error_sd, 100))
+```
+
+The plot below shows the distribution of the probability that a study of a random imageset will give you a significant result in the predicted direction. 
+
+```{r}
+pcnt <- round(mean(x == 1)*100)
+hist(x)
+```
+
+You can see that `r pcnt`% of values are 1. If r = 0, then this represents the probability that a random image set, where the proxy value has *no* relation to the visual value, will always give you significant results in the predicted direction.
+
+You can also run a non-directional version.
+
+```{r}
+x2 <- replicate(100, sim(stim_n, r, comp_n, rater_n, error_sd, 100, "two.sided"))
+hist(x2)
+```
+
+
+If you decrease the number of images in the composites, increase the number of raters, or decrease the error_sd (increasing the accuracy/agreement of rater perceptions of the visual value), this false positive rate will increase towards 50% (or 100% if the hypothesis is not directional).
+
+```{r}
+stim_n <- 30 
+r <- 0 
+comp_n <- 6 
+rater_n <- 300
+error_sd <- 0.2
+x <- replicate(100, sim(stim_n, r, comp_n, rater_n, error_sd, 100))
+hist(x)
+```
+
+
+
+
+
